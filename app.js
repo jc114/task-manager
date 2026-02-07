@@ -1,534 +1,584 @@
-// Task Manager App
-let tasks = [];
-let currentView = 'dashboard';
-let sortColumn = null;
-let sortDirection = 'asc';
-let draggedCard = null;
-
-// Configuration
-const CONFIG_KEY = 'taskManagerConfig';
-const DEFAULT_SHEET_ID = '1w6I2fGi4e2_ztQHNy7ia0kjmmbrewWzg7vWtAM1QlKc';
-
-// Initialize app
-document.addEventListener('DOMContentLoaded', () => {
-    initializeApp();
-    setupEventListeners();
-});
-
-function initializeApp() {
-    const config = getConfig();
-    if (!config.sheetId) {
-        showConfigModal();
-    } else {
-        loadTasks();
-    }
-}
-
-function getConfig() {
-    const saved = localStorage.getItem(CONFIG_KEY);
-    return saved ? JSON.parse(saved) : { sheetId: DEFAULT_SHEET_ID };
-}
-
-function saveConfig(sheetId) {
-    localStorage.setItem(CONFIG_KEY, JSON.stringify({ sheetId }));
-}
-
-function setupEventListeners() {
-    // View switching
-    document.querySelectorAll('.view-btn').forEach(btn => {
-        btn.addEventListener('click', () => switchView(btn.dataset.view));
-    });
-
-    // Sync button
-    document.getElementById('syncBtn').addEventListener('click', loadTasks);
-
-    // Filters
-    document.getElementById('searchInput').addEventListener('input', applyFilters);
-    document.getElementById('priorityFilter').addEventListener('change', applyFilters);
-    document.getElementById('statusFilter').addEventListener('change', applyFilters);
-    document.getElementById('projectFilter').addEventListener('change', applyFilters);
-
-    // Config modal
-    document.getElementById('saveConfigBtn').addEventListener('click', saveConfiguration);
-    document.getElementById('cancelConfigBtn').addEventListener('click', hideConfigModal);
-
-    // Gantt zoom
-    document.getElementById('ganttZoomIn')?.addEventListener('click', () => adjustGanttZoom('in'));
-    document.getElementById('ganttZoomOut')?.addEventListener('click', () => adjustGanttZoom('out'));
-}
-
-function showConfigModal() {
-    const modal = document.getElementById('configModal');
-    const input = document.getElementById('sheetIdInput');
-    const config = getConfig();
-    input.value = config.sheetId || DEFAULT_SHEET_ID;
-    modal.classList.add('active');
-}
-
-function hideConfigModal() {
-    document.getElementById('configModal').classList.remove('active');
-}
-
-function saveConfiguration() {
-    const sheetId = document.getElementById('sheetIdInput').value.trim();
-    if (sheetId) {
-        saveConfig(sheetId);
-        hideConfigModal();
-        loadTasks();
-    }
-}
-
-async function loadTasks() {
-    const config = getConfig();
-    const sheetId = config.sheetId;
-    
-    if (!sheetId) {
-        showConfigModal();
-        return;
+// Task Manager Application with Local Storage
+class TaskManager {
+    constructor() {
+        this.tasks = [];
+        this.currentView = 'dashboard';
+        this.filters = {
+            search: '',
+            priority: 'all',
+            status: 'all',
+            project: 'all'
+        };
+        this.editingTaskId = null;
+        this.init();
     }
 
-    showLoading(true);
-    hideError();
-
-    try {
-        // Fetch from Google Sheets using published CSV endpoint
-        const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=Active%20Tasks`;
-        
-        const response = await fetch(url);
-        if (!response.ok) throw new Error('Failed to fetch data from Google Sheets');
-        
-        const csvText = await response.text();
-        tasks = parseCSV(csvText);
-        
-        renderDashboard();
-        renderKanban();
-        renderGantt();
-        updateStats();
-        populateProjectFilter();
-        
-        showLoading(false);
-    } catch (error) {
-        console.error('Error loading tasks:', error);
-        showError('Failed to load tasks. Please check your Google Sheets ID and ensure the sheet is published. Error: ' + error.message);
-        showLoading(false);
-        
-        // Load sample data for demo
-        loadSampleData();
+    init() {
+        this.loadFromLocalStorage();
+        this.setupEventListeners();
+        this.render();
     }
-}
 
-function parseCSV(csv) {
-    const lines = csv.split('\n').filter(line => line.trim());
-    if (lines.length < 2) return [];
-    
-    const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim());
-    const tasks = [];
-    
-    for (let i = 1; i < lines.length; i++) {
-        const values = parseCSVLine(lines[i]);
-        if (values.length < headers.length) continue;
-        
-        const task = {};
-        headers.forEach((header, index) => {
-            task[header.toLowerCase().replace(/\s+/g, '_')] = values[index]?.replace(/"/g, '').trim() || '';
-        });
-        
-        if (task.task_name) {
-            tasks.push(task);
-        }
-    }
-    
-    return tasks;
-}
-
-function parseCSVLine(line) {
-    const result = [];
-    let current = '';
-    let inQuotes = false;
-    
-    for (let i = 0; i < line.length; i++) {
-        const char = line[i];
-        
-        if (char === '"') {
-            inQuotes = !inQuotes;
-        } else if (char === ',' && !inQuotes) {
-            result.push(current);
-            current = '';
+    // Local Storage Methods
+    loadFromLocalStorage() {
+        const stored = localStorage.getItem('taskManagerData');
+        if (stored) {
+            this.tasks = JSON.parse(stored);
         } else {
-            current += char;
+            // Initialize with sample data
+            this.tasks = this.getSampleTasks();
+            this.saveToLocalStorage();
         }
     }
-    result.push(current);
-    
-    return result;
-}
 
-function loadSampleData() {
-    tasks = [
-        {
-            task_name: 'Complete Q1 Trading Strategy Review',
-            status: 'In Progress',
-            priority: 'High',
-            deadline: '2026-02-28',
-            project_category: 'Trading Strategy',
-            notes: 'Focus on EM Asia FX pairs'
-        },
-        {
-            task_name: 'Update Risk Models',
-            status: 'Not Started',
-            priority: 'High',
-            deadline: '2026-03-15',
-            project_category: 'Risk Management',
-            notes: 'Include volatility adjustments'
-        },
-        {
-            task_name: 'Review EUR/USD Position Limits',
-            status: 'Not Started',
-            priority: 'High',
-            deadline: '2026-02-14',
-            project_category: 'Risk Management',
-            notes: 'Urgent - review before Valentine\'s Day'
-        },
-        {
-            task_name: 'Analyze JPY correlation patterns',
-            status: 'In Progress',
-            priority: 'Medium',
-            deadline: '2026-03-01',
-            project_category: 'Market Analysis',
-            notes: 'Cross-check with BOJ policy updates'
-        },
-        {
-            task_name: 'Build automated alert system',
-            status: 'Not Started',
-            priority: 'Medium',
-            deadline: '2026-03-31',
-            project_category: 'Trading Automation',
-            notes: 'Integration with existing monitoring'
+    saveToLocalStorage() {
+        localStorage.setItem('taskManagerData', JSON.stringify(this.tasks));
+    }
+
+    getSampleTasks() {
+        return [
+            {
+                id: Date.now() + 1,
+                name: 'Design Homepage Mockup',
+                description: 'Create wireframes and visual design for the new homepage',
+                status: 'In Progress',
+                priority: 'High',
+                project: 'Website Redesign',
+                assignee: 'Sarah Chen',
+                startDate: '2024-01-15',
+                endDate: '2024-01-20',
+                progress: 60
+            },
+            {
+                id: Date.now() + 2,
+                name: 'Backend API Development',
+                description: 'Build REST API endpoints for user authentication',
+                status: 'Not Started',
+                priority: 'High',
+                project: 'Mobile App',
+                assignee: 'John Smith',
+                startDate: '2024-01-18',
+                endDate: '2024-02-01',
+                progress: 0
+            },
+            {
+                id: Date.now() + 3,
+                name: 'Database Migration',
+                description: 'Migrate from PostgreSQL 12 to PostgreSQL 15',
+                status: 'Completed',
+                priority: 'Medium',
+                project: 'Infrastructure',
+                assignee: 'Mike Johnson',
+                startDate: '2024-01-10',
+                endDate: '2024-01-14',
+                progress: 100
+            },
+            {
+                id: Date.now() + 4,
+                name: 'User Testing Session',
+                description: 'Conduct usability testing with 10 participants',
+                status: 'On Hold',
+                priority: 'Low',
+                project: 'Website Redesign',
+                assignee: 'Emily Davis',
+                startDate: '2024-01-25',
+                endDate: '2024-01-27',
+                progress: 25
+            }
+        ];
+    }
+
+    // CRUD Operations
+    addTask(taskData) {
+        const newTask = {
+            id: Date.now(),
+            name: taskData.name,
+            description: taskData.description || '',
+            status: taskData.status || 'Not Started',
+            priority: taskData.priority || 'Medium',
+            project: taskData.project || '',
+            assignee: taskData.assignee || '',
+            startDate: taskData.startDate || '',
+            endDate: taskData.endDate || '',
+            progress: taskData.progress || 0
+        };
+        this.tasks.push(newTask);
+        this.saveToLocalStorage();
+        this.render();
+        return newTask;
+    }
+
+    updateTask(id, updates) {
+        const index = this.tasks.findIndex(t => t.id === id);
+        if (index !== -1) {
+            this.tasks[index] = { ...this.tasks[index], ...updates };
+            this.saveToLocalStorage();
+            this.render();
+            return this.tasks[index];
         }
-    ];
-    
-    renderDashboard();
-    renderKanban();
-    renderGantt();
-    updateStats();
-    populateProjectFilter();
-}
+        return null;
+    }
 
-function switchView(view) {
-    currentView = view;
-    
-    // Update buttons
-    document.querySelectorAll('.view-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.view === view);
-    });
-    
-    // Update views
-    document.querySelectorAll('.view').forEach(v => {
-        v.classList.toggle('active', v.id === `${view}View`);
-    });
-}
+    deleteTask(id) {
+        if (!confirm('Are you sure you want to delete this task?')) {
+            return false;
+        }
+        const index = this.tasks.findIndex(t => t.id === id);
+        if (index !== -1) {
+            this.tasks.splice(index, 1);
+            this.saveToLocalStorage();
+            this.render();
+            return true;
+        }
+        return false;
+    }
 
-function updateStats() {
-    const total = tasks.length;
-    const inProgress = tasks.filter(t => t.status === 'In Progress').length;
-    const completed = tasks.filter(t => t.status === 'Completed').length;
-    const urgent = tasks.filter(t => t.priority === 'High').length;
-    
-    document.getElementById('totalTasks').textContent = total;
-    document.getElementById('inProgressTasks').textContent = inProgress;
-    document.getElementById('completedTasks').textContent = completed;
-    document.getElementById('urgentTasks').textContent = urgent;
-}
+    getTask(id) {
+        return this.tasks.find(t => t.id === id);
+    }
 
-function renderDashboard() {
-    const tbody = document.getElementById('tasksTableBody');
-    tbody.innerHTML = '';
-    
-    const filteredTasks = getFilteredTasks();
-    
-    filteredTasks.forEach(task => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-            <td><strong>${escapeHtml(task.task_name || task.task)}</strong><br>
-                <small style="color: #6C757D;">${escapeHtml(task.notes || '')}</small>
-            </td>
-            <td><span class="status-badge status-${slugify(task.status)}">${escapeHtml(task.status)}</span></td>
-            <td><span class="priority-badge priority-${task.priority?.toLowerCase()}">${escapeHtml(task.priority)}</span></td>
-            <td>${formatDate(task.deadline)}</td>
-            <td>${escapeHtml(task.project_category || task.project || '')}</td>
-        `;
-        tbody.appendChild(row);
-    });
-}
-
-function renderKanban() {
-    const statuses = ['Not Started', 'In Progress', 'Completed', 'On Hold'];
-    
-    statuses.forEach(status => {
-        const container = document.getElementById(`kanban-${slugify(status)}`);
-        if (!container) return;
-        
-        container.innerHTML = '';
-        
-        const statusTasks = tasks.filter(t => t.status === status);
-        statusTasks.forEach(task => {
-            const card = createKanbanCard(task);
-            container.appendChild(card);
+    // Event Listeners
+    setupEventListeners() {
+        // View switching
+        document.querySelectorAll('.view-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                this.switchView(e.target.dataset.view);
+            });
         });
-    });
-    
-    setupDragAndDrop();
-}
 
-function createKanbanCard(task) {
-    const card = document.createElement('div');
-    card.className = 'kanban-card';
-    card.draggable = true;
-    card.dataset.task = task.task_name || task.task;
-    
-    const priorityColor = {
-        'High': '#DC3545',
-        'Medium': '#FFC107',
-        'Low': '#28A745'
-    }[task.priority] || '#4A90E2';
-    
-    card.style.borderLeftColor = priorityColor;
-    
-    card.innerHTML = `
-        <h4>${escapeHtml(task.task_name || task.task)}</h4>
-        <p style="font-size: 12px; color: #6C757D; margin-top: 5px;">${escapeHtml(task.notes || '')}</p>
-        <div class="kanban-card-meta">
-            <span class="priority-badge priority-${task.priority?.toLowerCase()}">${escapeHtml(task.priority)}</span>
-            <span><i class="far fa-calendar"></i> ${formatDate(task.deadline)}</span>
-        </div>
-    `;
-    
-    return card;
-}
+        // Add task button
+        document.getElementById('addTaskBtn').addEventListener('click', () => {
+            this.openTaskModal();
+        });
 
-function setupDragAndDrop() {
-    const cards = document.querySelectorAll('.kanban-card');
-    const columns = document.querySelectorAll('.kanban-cards');
-    
-    cards.forEach(card => {
-        card.addEventListener('dragstart', handleDragStart);
-        card.addEventListener('dragend', handleDragEnd);
-    });
-    
-    columns.forEach(column => {
-        column.addEventListener('dragover', handleDragOver);
-        column.addEventListener('drop', handleDrop);
-    });
-}
+        // Settings button
+        document.getElementById('settingsBtn').addEventListener('click', () => {
+            this.openSettingsModal();
+        });
 
-function handleDragStart(e) {
-    draggedCard = this;
-    this.classList.add('dragging');
-    e.dataTransfer.effectAllowed = 'move';
-}
+        // Search and filters
+        document.getElementById('searchInput').addEventListener('input', (e) => {
+            this.filters.search = e.target.value;
+            this.render();
+        });
 
-function handleDragEnd(e) {
-    this.classList.remove('dragging');
-}
+        document.getElementById('priorityFilter').addEventListener('change', (e) => {
+            this.filters.priority = e.target.value;
+            this.render();
+        });
 
-function handleDragOver(e) {
-    if (e.preventDefault) {
-        e.preventDefault();
+        document.getElementById('statusFilter').addEventListener('change', (e) => {
+            this.filters.status = e.target.value;
+            this.render();
+        });
+
+        document.getElementById('projectFilter').addEventListener('change', (e) => {
+            this.filters.project = e.target.value;
+            this.render();
+        });
+
+        // Task modal
+        document.getElementById('closeTaskModal').addEventListener('click', () => {
+            this.closeTaskModal();
+        });
+
+        document.getElementById('cancelTaskBtn').addEventListener('click', () => {
+            this.closeTaskModal();
+        });
+
+        document.getElementById('taskForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.handleTaskSubmit();
+        });
+
+        // Settings modal
+        document.getElementById('closeSettingsModal').addEventListener('click', () => {
+            this.closeSettingsModal();
+        });
+
+        document.getElementById('cancelSettingsBtn').addEventListener('click', () => {
+            this.closeSettingsModal();
+        });
+
+        document.getElementById('exportDataBtn').addEventListener('click', () => {
+            this.exportData();
+        });
+
+        document.getElementById('importDataBtn').addEventListener('click', () => {
+            document.getElementById('importFileInput').click();
+        });
+
+        document.getElementById('importFileInput').addEventListener('change', (e) => {
+            this.importData(e.target.files[0]);
+        });
+
+        document.getElementById('clearDataBtn').addEventListener('click', () => {
+            this.clearAllData();
+        });
+
+        // Close modals on outside click
+        window.addEventListener('click', (e) => {
+            if (e.target.classList.contains('modal')) {
+                e.target.style.display = 'none';
+            }
+        });
     }
-    e.dataTransfer.dropEffect = 'move';
-    return false;
-}
 
-function handleDrop(e) {
-    if (e.stopPropagation) {
-        e.stopPropagation();
-    }
-    
-    if (draggedCard) {
-        const newStatus = this.parentElement.dataset.status;
-        const taskName = draggedCard.dataset.task;
+    // View Management
+    switchView(view) {
+        this.currentView = view;
         
-        // Update task status
-        const task = tasks.find(t => (t.task_name || t.task) === taskName);
-        if (task) {
-            task.status = newStatus;
-            renderKanban();
-            renderDashboard();
-            updateStats();
+        // Update active button
+        document.querySelectorAll('.view-btn').forEach(btn => {
+            btn.classList.remove('active');
+        });
+        document.querySelector(`[data-view="${view}"]`).classList.add('active');
+
+        // Show/hide views
+        document.querySelectorAll('.view').forEach(v => {
+            v.classList.remove('active');
+        });
+        document.getElementById(`${view}View`).classList.add('active');
+
+        this.render();
+    }
+
+    // Filtering
+    getFilteredTasks() {
+        return this.tasks.filter(task => {
+            const matchesSearch = !this.filters.search || 
+                task.name.toLowerCase().includes(this.filters.search.toLowerCase()) ||
+                task.description.toLowerCase().includes(this.filters.search.toLowerCase());
+            
+            const matchesPriority = this.filters.priority === 'all' || 
+                task.priority === this.filters.priority;
+            
+            const matchesStatus = this.filters.status === 'all' || 
+                task.status === this.filters.status;
+            
+            const matchesProject = this.filters.project === 'all' || 
+                task.project === this.filters.project;
+
+            return matchesSearch && matchesPriority && matchesStatus && matchesProject;
+        });
+    }
+
+    // Rendering
+    render() {
+        this.updateStats();
+        this.updateProjectFilter();
+
+        if (this.currentView === 'dashboard') {
+            this.renderDashboard();
+        } else if (this.currentView === 'kanban') {
+            this.renderKanban();
+        } else if (this.currentView === 'gantt') {
+            this.renderGantt();
         }
     }
-    
-    return false;
-}
 
-function renderGantt() {
-    const chart = document.getElementById('ganttChart');
-    if (!chart) return;
-    
-    chart.innerHTML = '';
-    
-    const tasksWithDeadlines = tasks.filter(t => t.deadline);
-    if (tasksWithDeadlines.length === 0) {
-        chart.innerHTML = '<p style="text-align: center; color: #6C757D; padding: 40px;">No tasks with deadlines</p>';
-        return;
+    updateStats() {
+        const filteredTasks = this.getFilteredTasks();
+        const total = filteredTasks.length;
+        const completed = filteredTasks.filter(t => t.status === 'Completed').length;
+        const inProgress = filteredTasks.filter(t => t.status === 'In Progress').length;
+        const notStarted = filteredTasks.filter(t => t.status === 'Not Started').length;
+
+        document.getElementById('totalTasks').textContent = total;
+        document.getElementById('completedTasks').textContent = completed;
+        document.getElementById('inProgressTasks').textContent = inProgress;
+        document.getElementById('notStartedTasks').textContent = notStarted;
     }
-    
-    // Calculate date range
-    const dates = tasksWithDeadlines.map(t => new Date(t.deadline));
-    const minDate = new Date(Math.min(...dates));
-    const maxDate = new Date(Math.max(...dates));
-    const today = new Date();
-    
-    minDate.setDate(minDate.getDate() - 7);
-    maxDate.setDate(maxDate.getDate() + 7);
-    
-    const totalDays = Math.ceil((maxDate - minDate) / (1000 * 60 * 60 * 24));
-    
-    // Update date range display
-    document.getElementById('ganttDateRange').textContent = 
-        `${formatDate(minDate)} - ${formatDate(maxDate)}`;
-    
-    // Create header
-    const header = document.createElement('div');
-    header.className = 'gantt-header';
-    header.innerHTML = `
-        <div class="gantt-header-label">Task</div>
-        <div class="gantt-dates">
-            <span>${formatDate(minDate)}</span>
-            <span>Today</span>
-            <span>${formatDate(maxDate)}</span>
-        </div>
-    `;
-    chart.appendChild(header);
-    
-    // Create rows
-    tasksWithDeadlines.forEach(task => {
-        const row = document.createElement('div');
-        row.className = 'gantt-row';
+
+    updateProjectFilter() {
+        const projects = [...new Set(this.tasks.map(t => t.project).filter(p => p))];
+        const projectFilter = document.getElementById('projectFilter');
+        const currentValue = projectFilter.value;
         
-        const deadline = new Date(task.deadline);
-        const startDate = new Date(deadline);
-        startDate.setDate(startDate.getDate() - 7); // Assume 7 day duration
+        projectFilter.innerHTML = '<option value="all">All Projects</option>';
+        projects.forEach(project => {
+            const option = document.createElement('option');
+            option.value = project;
+            option.textContent = project;
+            projectFilter.appendChild(option);
+        });
         
-        const startOffset = ((startDate - minDate) / (maxDate - minDate)) * 100;
-        const duration = ((deadline - startDate) / (maxDate - minDate)) * 100;
-        
-        const barColor = {
-            'High': '#DC3545',
-            'Medium': '#FFC107',
-            'Low': '#28A745'
-        }[task.priority] || '#4A90E2';
-        
-        row.innerHTML = `
-            <div class="gantt-label">${escapeHtml(task.task_name || task.task)}</div>
-            <div class="gantt-timeline">
-                <div class="gantt-bar" style="left: ${startOffset}%; width: ${duration}%; background: ${barColor};">
-                    ${formatDate(task.deadline)}
+        projectFilter.value = currentValue;
+    }
+
+    renderDashboard() {
+        const tbody = document.getElementById('dashboardTableBody');
+        const filteredTasks = this.getFilteredTasks();
+
+        tbody.innerHTML = filteredTasks.map(task => `
+            <tr>
+                <td>${task.name}</td>
+                <td><span class="status-badge status-${task.status.toLowerCase().replace(/ /g, '-')}">${task.status}</span></td>
+                <td><span class="priority-badge priority-${task.priority.toLowerCase()}">${task.priority}</span></td>
+                <td>${task.project || 'N/A'}</td>
+                <td>${task.assignee || 'Unassigned'}</td>
+                <td>${task.endDate || 'N/A'}</td>
+                <td>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: ${task.progress}%"></div>
+                    </div>
+                    <span class="progress-text">${task.progress}%</span>
+                </td>
+                <td>
+                    <button class="action-btn" onclick="taskManager.openTaskModal(${task.id})" title="Edit">
+                        <i class="fas fa-edit"></i>
+                    </button>
+                    <button class="action-btn" onclick="taskManager.deleteTask(${task.id})" title="Delete">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    renderKanban() {
+        const statuses = ['Not Started', 'In Progress', 'Completed', 'On Hold'];
+        const filteredTasks = this.getFilteredTasks();
+
+        statuses.forEach(status => {
+            const columnId = status.toLowerCase().replace(/ /g, '-');
+            const column = document.getElementById(`${columnId}-column`);
+            const tasksForStatus = filteredTasks.filter(t => t.status === status);
+
+            column.innerHTML = tasksForStatus.map(task => `
+                <div class="kanban-card" draggable="true" data-task-id="${task.id}" ondragstart="taskManager.handleDragStart(event)" ondragend="taskManager.handleDragEnd(event)">
+                    <div class="kanban-card-header">
+                        <h4>${task.name}</h4>
+                        <span class="priority-badge priority-${task.priority.toLowerCase()}">${task.priority}</span>
+                    </div>
+                    <p class="kanban-card-description">${task.description || 'No description'}</p>
+                    <div class="kanban-card-meta">
+                        <span><i class="fas fa-user"></i> ${task.assignee || 'Unassigned'}</span>
+                        <span><i class="fas fa-calendar"></i> ${task.endDate || 'No deadline'}</span>
+                    </div>
+                    <div class="kanban-card-actions">
+                        <button class="action-btn" onclick="taskManager.openTaskModal(${task.id})" title="Edit">
+                            <i class="fas fa-edit"></i>
+                        </button>
+                        <button class="action-btn" onclick="taskManager.deleteTask(${task.id})" title="Delete">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </div>
                 </div>
-            </div>
-        `;
-        
-        chart.appendChild(row);
-    });
-}
+            `).join('');
+        });
 
-function applyFilters() {
-    renderDashboard();
-}
-
-function getFilteredTasks() {
-    const searchTerm = document.getElementById('searchInput').value.toLowerCase();
-    const priorityFilter = document.getElementById('priorityFilter').value;
-    const statusFilter = document.getElementById('statusFilter').value;
-    const projectFilter = document.getElementById('projectFilter').value;
-    
-    return tasks.filter(task => {
-        const matchesSearch = !searchTerm || 
-            (task.task_name || task.task || '').toLowerCase().includes(searchTerm) ||
-            (task.notes || '').toLowerCase().includes(searchTerm);
-        
-        const matchesPriority = !priorityFilter || task.priority === priorityFilter;
-        const matchesStatus = !statusFilter || task.status === statusFilter;
-        const matchesProject = !projectFilter || 
-            (task.project_category || task.project) === projectFilter;
-        
-        return matchesSearch && matchesPriority && matchesStatus && matchesProject;
-    });
-}
-
-function populateProjectFilter() {
-    const projects = [...new Set(tasks.map(t => t.project_category || t.project).filter(Boolean))];
-    const select = document.getElementById('projectFilter');
-    
-    select.innerHTML = '<option value="">All Projects</option>';
-    projects.forEach(project => {
-        const option = document.createElement('option');
-        option.value = project;
-        option.textContent = project;
-        select.appendChild(option);
-    });
-}
-
-function sortTable(column) {
-    if (sortColumn === column) {
-        sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
-    } else {
-        sortColumn = column;
-        sortDirection = 'asc';
+        // Setup drop zones
+        document.querySelectorAll('.kanban-column').forEach(column => {
+            column.addEventListener('dragover', this.handleDragOver);
+            column.addEventListener('drop', (e) => this.handleDrop(e));
+        });
     }
-    
-    tasks.sort((a, b) => {
-        let aVal = a[column] || a[column + '_name'] || '';
-        let bVal = b[column] || b[column + '_name'] || '';
-        
-        if (column === 'deadline') {
-            aVal = new Date(aVal);
-            bVal = new Date(bVal);
+
+    handleDragStart(event) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/html', event.target.innerHTML);
+        event.dataTransfer.setData('taskId', event.target.dataset.taskId);
+        event.target.style.opacity = '0.4';
+    }
+
+    handleDragEnd(event) {
+        event.target.style.opacity = '1';
+    }
+
+    handleDragOver(event) {
+        if (event.preventDefault) {
+            event.preventDefault();
         }
+        event.dataTransfer.dropEffect = 'move';
+        return false;
+    }
+
+    handleDrop(event) {
+        if (event.stopPropagation) {
+            event.stopPropagation();
+        }
+
+        const taskId = parseInt(event.dataTransfer.getData('taskId'));
+        const newStatus = event.currentTarget.dataset.status;
         
-        if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
-        if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
-        return 0;
-    });
-    
-    renderDashboard();
+        if (taskId && newStatus) {
+            const statusMap = {
+                'not-started': 'Not Started',
+                'in-progress': 'In Progress',
+                'completed': 'Completed',
+                'on-hold': 'On Hold'
+            };
+            
+            const progress = statusMap[newStatus] === 'Completed' ? 100 : 
+                           statusMap[newStatus] === 'In Progress' ? 50 :
+                           statusMap[newStatus] === 'On Hold' ? 25 : 0;
+
+            this.updateTask(taskId, { 
+                status: statusMap[newStatus],
+                progress: progress
+            });
+        }
+
+        return false;
+    }
+
+    renderGantt() {
+        const ganttTasks = document.getElementById('ganttTasks');
+        const ganttBars = document.getElementById('ganttBars');
+        const filteredTasks = this.getFilteredTasks().filter(t => t.startDate && t.endDate);
+
+        if (filteredTasks.length === 0) {
+            ganttTasks.innerHTML = '<div style="padding: 20px; text-align: center;">No tasks with dates to display</div>';
+            ganttBars.innerHTML = '';
+            return;
+        }
+
+        // Calculate date range
+        const dates = filteredTasks.flatMap(t => [new Date(t.startDate), new Date(t.endDate)]);
+        const minDate = new Date(Math.min(...dates));
+        const maxDate = new Date(Math.max(...dates));
+        const totalDays = Math.ceil((maxDate - minDate) / (1000 * 60 * 60 * 24)) + 1;
+
+        // Render task names
+        ganttTasks.innerHTML = filteredTasks.map(task => `
+            <div class="gantt-task-name">
+                <strong>${task.name}</strong>
+                <small>${task.project || 'No project'}</small>
+            </div>
+        `).join('');
+
+        // Render gantt bars
+        ganttBars.innerHTML = filteredTasks.map(task => {
+            const start = new Date(task.startDate);
+            const end = new Date(task.endDate);
+            const daysFromStart = Math.ceil((start - minDate) / (1000 * 60 * 60 * 24));
+            const duration = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
+            
+            const left = (daysFromStart / totalDays) * 100;
+            const width = (duration / totalDays) * 100;
+
+            return `
+                <div class="gantt-row">
+                    <div class="gantt-bar status-${task.status.toLowerCase().replace(/ /g, '-')}" 
+                         style="left: ${left}%; width: ${width}%"
+                         title="${task.name}: ${task.startDate} to ${task.endDate}">
+                        <span class="gantt-bar-label">${task.progress}%</span>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    // Task Modal Management
+    openTaskModal(taskId = null) {
+        this.editingTaskId = taskId;
+        const modal = document.getElementById('taskModal');
+        const form = document.getElementById('taskForm');
+        const title = document.getElementById('taskModalTitle');
+
+        if (taskId) {
+            const task = this.getTask(taskId);
+            title.textContent = 'Edit Task';
+            document.getElementById('taskName').value = task.name;
+            document.getElementById('taskDescription').value = task.description;
+            document.getElementById('taskStatus').value = task.status;
+            document.getElementById('taskPriority').value = task.priority;
+            document.getElementById('taskProject').value = task.project;
+            document.getElementById('taskAssignee').value = task.assignee;
+            document.getElementById('taskStartDate').value = task.startDate;
+            document.getElementById('taskEndDate').value = task.endDate;
+            document.getElementById('taskProgress').value = task.progress;
+        } else {
+            title.textContent = 'Add New Task';
+            form.reset();
+        }
+
+        modal.style.display = 'block';
+    }
+
+    closeTaskModal() {
+        document.getElementById('taskModal').style.display = 'none';
+        this.editingTaskId = null;
+    }
+
+    handleTaskSubmit() {
+        const formData = {
+            name: document.getElementById('taskName').value,
+            description: document.getElementById('taskDescription').value,
+            status: document.getElementById('taskStatus').value,
+            priority: document.getElementById('taskPriority').value,
+            project: document.getElementById('taskProject').value,
+            assignee: document.getElementById('taskAssignee').value,
+            startDate: document.getElementById('taskStartDate').value,
+            endDate: document.getElementById('taskEndDate').value,
+            progress: parseInt(document.getElementById('taskProgress').value)
+        };
+
+        if (this.editingTaskId) {
+            this.updateTask(this.editingTaskId, formData);
+        } else {
+            this.addTask(formData);
+        }
+
+        this.closeTaskModal();
+    }
+
+    // Settings Modal
+    openSettingsModal() {
+        document.getElementById('settingsModal').style.display = 'block';
+    }
+
+    closeSettingsModal() {
+        document.getElementById('settingsModal').style.display = 'none';
+    }
+
+    exportData() {
+        const dataStr = JSON.stringify(this.tasks, null, 2);
+        const blob = new Blob([dataStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `task-manager-backup-${new Date().toISOString().split('T')[0]}.json`;
+        link.click();
+        URL.revokeObjectURL(url);
+    }
+
+    importData(file) {
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const imported = JSON.parse(e.target.result);
+                if (Array.isArray(imported)) {
+                    this.tasks = imported;
+                    this.saveToLocalStorage();
+                    this.render();
+                    alert('Data imported successfully!');
+                    this.closeSettingsModal();
+                } else {
+                    alert('Invalid file format');
+                }
+            } catch (error) {
+                alert('Error importing file: ' + error.message);
+            }
+        };
+        reader.readAsText(file);
+    }
+
+    clearAllData() {
+        if (confirm('Are you sure you want to clear all tasks? This cannot be undone.')) {
+            this.tasks = [];
+            this.saveToLocalStorage();
+            this.render();
+            this.closeSettingsModal();
+        }
+    }
 }
 
-function adjustGanttZoom(direction) {
-    // Placeholder for zoom functionality
-    console.log('Zoom', direction);
-}
-
-// Utility functions
-function formatDate(dateString) {
-    if (!dateString) return 'No deadline';
-    const date = new Date(dateString);
-    if (isNaN(date.getTime())) return dateString;
-    
-    const options = { year: 'numeric', month: 'short', day: 'numeric' };
-    return date.toLocaleDateString('en-US', options);
-}
-
-function slugify(text) {
-    return (text || '').toLowerCase().replace(/\s+/g, '-');
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-function showLoading(show) {
-    document.getElementById('loadingIndicator').classList.toggle('active', show);
-}
-
-function showError(message) {
-    const errorEl = document.getElementById('errorMessage');
-    errorEl.textContent = message;
-    errorEl.classList.add('active');
-}
-
-function hideError() {
-    document.getElementById('errorMessage').classList.remove('active');
-}
+// Initialize the app
+let taskManager;
+document.addEventListener('DOMContentLoaded', () => {
+    taskManager = new TaskManager();
+});
